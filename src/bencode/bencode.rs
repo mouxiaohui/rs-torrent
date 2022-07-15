@@ -23,9 +23,28 @@ fn peek(reader: &mut dyn BufRead) -> Result<u8> {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct Num {
+    sign: bool,
+    val: u64,
+}
+
+impl Num {
+    pub fn new(sign: bool, val: u64) -> Self {
+        Self { sign, val }
+    }
+
+    pub fn sign(&self) -> String {
+        match self.sign {
+            true => String::from("-"),
+            false => String::new(),
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
 pub enum BObject {
     BStr(String),
-    BInt(i64),
+    BInt(Num),
     BList(Vec<Box<BObject>>),
     BDict(HashMap<String, Box<BObject>>),
 }
@@ -136,41 +155,48 @@ where
     Ok(res.to_string())
 }
 
-pub fn encode_int<W: ?Sized>(writer: &mut W, val: &i64) -> Result<usize>
+pub fn encode_int<W: ?Sized>(writer: &mut W, val: &Num) -> Result<usize>
 where
     W: Write,
 {
-    let val_fmt = format!("i{}e", val);
+    let val_fmt = format!("i{}{}e", val.sign(), val.val);
     let size = writer.write(val_fmt.as_bytes())?;
     writer.flush()?;
 
     Ok(size)
 }
 
-pub fn decode_int<R: ?Sized>(reader: &mut R) -> Result<i64>
+pub fn decode_int<R: ?Sized>(reader: &mut R) -> Result<Num>
 where
     R: Read,
 {
     let mut buf = [0; 1];
 
     reader.read(&mut buf)?;
-    if buf[0] as char != 'i' {
+    if buf[0] != b'i' {
         return Err(BencodeError::TypeError.into());
     }
 
-    let mut num = 0;
+    let mut num = Vec::new();
+    let mut sign = false;
     loop {
         reader.read(&mut buf)?;
-        if buf[0] as char == 'e' {
+        if buf[0] == b'e' {
             break;
+        } else if buf[0] == b'-' {
+            sign = true;
+        } else {
+            num.push(buf[0]);
         }
-
-        num = (num * 10) + parse_utf8::<i64>(&buf)?;
     }
 
-    Ok(num)
+    Ok(Num {
+        sign,
+        val: parse_utf8::<u64>(&num)?,
+    })
 }
 
+#[cfg(test)]
 mod test {
     use super::*;
 
@@ -191,15 +217,17 @@ mod test {
     #[test]
     fn test_encode_int() {
         let mut writer = vec![];
-        encode_int(&mut writer, &8848).unwrap();
+        let num = Num::new(false, 8848);
+        encode_int(&mut writer, &num).unwrap();
         assert_eq!("i8848e", std::str::from_utf8(&writer).unwrap());
     }
 
     #[test]
     fn test_decode_int() {
-        let mut reader: &[u8] = b"i8848e";
+        let exp = Num::new(true, 8848);
+        let mut reader: &[u8] = b"i-8848e";
         let num = decode_int(&mut reader).unwrap();
-        assert_eq!(8848, num);
+        assert_eq!(exp, num);
     }
 
     #[test]
@@ -207,14 +235,20 @@ mod test {
         let mut buf = vec![];
         let expect_obj = BObject::BList(vec![
             Box::new(BObject::BStr(String::from("Rust"))),
-            Box::new(BObject::BInt(12138)),
+            Box::new(BObject::BInt(Num::new(true, 12138))),
             Box::new(BObject::BList(vec![
                 Box::new(BObject::BStr(String::from("Java"))),
                 Box::new(BObject::BStr(String::from("Golang"))),
             ])),
             Box::new(BObject::BDict(HashMap::from([
-                (String::from("one"), Box::new(BObject::BInt(1))),
-                (String::from("two"), Box::new(BObject::BInt(2))),
+                (
+                    String::from("one"),
+                    Box::new(BObject::BInt(Num::new(false, 1))),
+                ),
+                (
+                    String::from("two"),
+                    Box::new(BObject::BInt(Num::new(false, 2))),
+                ),
             ]))),
         ]);
 
