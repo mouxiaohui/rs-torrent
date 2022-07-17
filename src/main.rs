@@ -1,11 +1,17 @@
+use std::collections::HashMap;
+
 use anyhow::Result;
-use bencode::bencode::BObject;
 
 mod bencode;
 
+struct User {
+    name: String,
+    age: u32,
+}
+
+
 fn main() -> Result<()> {
-    let mut data: &[u8] = b"i-300e";
-    let obj = BObject::parse(&mut data)?;
-    println!("{:?}", obj);
+    let user = User {name: "xiaohui".to_string(), age: 18};
+    // d4:name7:xiaohui3:agei18ee
     Ok(())
 }

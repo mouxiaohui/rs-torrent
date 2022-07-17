@@ -1,2 +1,3 @@
-pub mod bencode;
+mod bencode;
 pub mod err;
+pub mod de;

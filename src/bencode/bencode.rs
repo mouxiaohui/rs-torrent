@@ -1,12 +1,12 @@
 use std::{
-    collections::HashMap,
-    io::{BufRead, Read, Write},
+    collections::VecDeque,
+    io::{BufRead, BufReader, Read, Write},
     str::FromStr,
 };
 
 use anyhow::{anyhow, Result};
 
-use super::err::BencodeError;
+use super::err::Error;
 
 fn parse_utf8<F>(v: &[u8]) -> Result<F>
 where
@@ -14,30 +14,53 @@ where
 {
     match std::str::from_utf8(v)?.parse::<F>() {
         Ok(res) => Ok(res),
-        Err(_) => Err(anyhow!("Parse failure: {:?}", v)),
+        Err(_) => Err(anyhow!("parse failure: {:?}", v)),
     }
 }
 
 fn peek(reader: &mut dyn BufRead) -> Result<u8> {
-    Ok(reader.fill_buf()?[0].clone())
+    Ok(reader.fill_buf()?[0])
 }
 
 #[derive(Debug, PartialEq)]
-pub struct Num {
-    sign: bool,
-    val: u64,
+pub enum Num {
+    U64(u64),
+    I64(i64),
 }
 
 impl Num {
-    pub fn new(sign: bool, val: u64) -> Self {
-        Self { sign, val }
-    }
-
-    pub fn sign(&self) -> String {
-        match self.sign {
-            true => String::from("-"),
-            false => String::new(),
+    pub fn str_num(&self) -> String {
+        match self {
+            Num::U64(v) => v.to_string(),
+            Num::I64(v) => v.to_string(),
         }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Map<K, V> {
+    pub k: VecDeque<K>,
+    pub v: VecDeque<V>,
+}
+
+impl<K, V> Map<K, V> {
+    fn new() -> Self {
+        Self {
+            k: VecDeque::new(),
+            v: VecDeque::new(),
+        }
+    }
+}
+
+impl<K, V, const N: usize> From<[(K, V); N]> for Map<K, V> {
+    fn from(arr: [(K, V); N]) -> Self {
+        let mut m = Self::new();
+        for (k, v) in arr {
+            m.k.push_back(k);
+            m.v.push_back(v);
+        }
+
+        m
     }
 }
 
@@ -45,46 +68,14 @@ impl Num {
 pub enum BObject {
     BStr(String),
     BInt(Num),
-    BList(Vec<Box<BObject>>),
-    BDict(HashMap<String, Box<BObject>>),
+    BList(VecDeque<BObject>),
+    BDict(Map<String, BObject>),
 }
 
 impl BObject {
-    pub fn parse<R: BufRead>(reader: &mut R) -> Result<Self> {
-        match peek(reader)? {
-            b'0'..=b'9' => Ok(Self::BStr(decode_string(reader)?)),
-            b'i' => Ok(Self::BInt(decode_int(reader)?)),
-            b'l' => {
-                reader.consume(1);
-                let mut list = Vec::new();
-                loop {
-                    if peek(reader)? == b'e' {
-                        reader.consume(1);
-                        break;
-                    }
-                    let obj = Self::parse(reader)?;
-                    list.push(Box::new(obj));
-                }
-
-                Ok(Self::BList(list))
-            }
-            b'd' => {
-                reader.consume(1);
-                let mut dict = HashMap::new();
-                loop {
-                    if peek(reader)? == b'e' {
-                        reader.consume(1);
-                        break;
-                    }
-                    let key = decode_string(reader)?;
-                    let val = Self::parse(reader)?;
-                    dict.insert(key, Box::new(val));
-                }
-
-                Ok(Self::BDict(dict))
-            }
-            _ => Err(anyhow!(BencodeError::InvalidBencode)),
-        }
+    pub fn parse<R: Read>(reader: &mut R) -> Result<Self> {
+        let mut reader = BufReader::new(reader);
+        parse_bencode(&mut reader)
     }
 
     pub fn bencode<W: ?Sized>(&self, writer: &mut W) -> Result<usize>
@@ -108,9 +99,9 @@ impl BObject {
             BObject::BDict(dict) => {
                 let mut len = 2;
                 writer.write(b"d")?;
-                for (k, obj) in dict {
+                for (k, v) in dict.k.iter().zip(dict.v.iter()) {
                     len += encode_string(writer, k)?;
-                    len += obj.bencode(writer)?;
+                    len += v.bencode(writer)?;
                 }
                 writer.write(b"e")?;
                 writer.flush()?;
@@ -121,7 +112,7 @@ impl BObject {
     }
 }
 
-pub fn encode_string<W: ?Sized>(writer: &mut W, val: &str) -> Result<usize>
+fn encode_string<W: ?Sized>(writer: &mut W, val: &str) -> Result<usize>
 where
     W: Write,
 {
@@ -132,7 +123,7 @@ where
     Ok(size)
 }
 
-pub fn decode_string<R: ?Sized>(reader: &mut R) -> Result<String>
+fn decode_string<R: ?Sized>(reader: &mut R) -> Result<String>
 where
     R: Read,
 {
@@ -145,7 +136,10 @@ where
             break;
         }
 
-        len = (len * 10) + parse_utf8::<usize>(&buf)?;
+        match parse_utf8::<usize>(&buf) {
+            Ok(v) => len = (len * 10) + v,
+            Err(_) => return Err(anyhow!(Error::InvalidStr)),
+        };
     }
 
     let mut buf = vec![0; len];
@@ -155,18 +149,18 @@ where
     Ok(res.to_string())
 }
 
-pub fn encode_int<W: ?Sized>(writer: &mut W, val: &Num) -> Result<usize>
+fn encode_int<W: ?Sized>(writer: &mut W, val: &Num) -> Result<usize>
 where
     W: Write,
 {
-    let val_fmt = format!("i{}{}e", val.sign(), val.val);
+    let val_fmt = format!("i{}e", val.str_num());
     let size = writer.write(val_fmt.as_bytes())?;
     writer.flush()?;
 
     Ok(size)
 }
 
-pub fn decode_int<R: ?Sized>(reader: &mut R) -> Result<Num>
+fn decode_int<R: ?Sized>(reader: &mut R) -> Result<Num>
 where
     R: Read,
 {
@@ -174,26 +168,68 @@ where
 
     reader.read(&mut buf)?;
     if buf[0] != b'i' {
-        return Err(BencodeError::TypeError.into());
+        return Err(anyhow!(Error::InvalidInteger));
     }
 
     let mut num = Vec::new();
-    let mut sign = false;
+    let mut is_negative = false;
+
     loop {
         reader.read(&mut buf)?;
         if buf[0] == b'e' {
             break;
         } else if buf[0] == b'-' {
-            sign = true;
-        } else {
-            num.push(buf[0]);
+            is_negative = true;
         }
+
+        num.push(buf[0]);
     }
 
-    Ok(Num {
-        sign,
-        val: parse_utf8::<u64>(&num)?,
-    })
+    if is_negative {
+        return Ok(Num::I64(parse_utf8(&mut num)?));
+    }
+
+    Ok(Num::U64(parse_utf8(&mut num)?))
+}
+
+fn parse_bencode<R: BufRead>(reader: &mut R) -> Result<BObject> {
+    match peek(reader)? {
+        b'0'..=b'9' => Ok(BObject::BStr(decode_string(reader)?)),
+        b'i' => Ok(BObject::BInt(decode_int(reader)?)),
+        b'l' => {
+            reader.consume(1);
+            let mut list = VecDeque::new();
+            loop {
+                if peek(reader)? == b'e' {
+                    reader.consume(1);
+                    break;
+                }
+                list.push_back(parse_bencode(reader)?);
+            }
+
+            Ok(BObject::BList(list))
+        }
+        b'd' => {
+            reader.consume(1);
+            let mut dict = Map::new();
+            loop {
+                if peek(reader)? == b'e' {
+                    reader.consume(1);
+                    break;
+                }
+                let key = decode_string(reader)?;
+                let val = parse_bencode(reader)?;
+                dict.k.push_back(key);
+                dict.v.push_back(val);
+            }
+
+            Ok(BObject::BDict(dict))
+        }
+        n @ _ => {
+            let c = n as char;
+            Err(anyhow!(Error::InvalidType(c.to_string())))
+        }
+    }
 }
 
 #[cfg(test)]
@@ -217,15 +253,24 @@ mod test {
     #[test]
     fn test_encode_int() {
         let mut writer = vec![];
-        let num = Num::new(false, 8848);
-        encode_int(&mut writer, &num).unwrap();
+        let num1 = Num::U64(8848);
+        let num2 = Num::I64(-8848);
+        encode_int(&mut writer, &num1).unwrap();
         assert_eq!("i8848e", std::str::from_utf8(&writer).unwrap());
+        writer.clear();
+        encode_int(&mut writer, &num2).unwrap();
+        assert_eq!("i-8848e", std::str::from_utf8(&writer).unwrap());
     }
 
     #[test]
     fn test_decode_int() {
-        let exp = Num::new(true, 8848);
+        let exp = Num::I64(-8848);
         let mut reader: &[u8] = b"i-8848e";
+        let num = decode_int(&mut reader).unwrap();
+        assert_eq!(exp, num);
+
+        let exp = Num::U64(2314);
+        let mut reader: &[u8] = b"i2314e";
         let num = decode_int(&mut reader).unwrap();
         assert_eq!(exp, num);
     }
@@ -233,27 +278,24 @@ mod test {
     #[test]
     fn test_bencode_parse() {
         let mut buf = vec![];
-        let expect_obj = BObject::BList(vec![
-            Box::new(BObject::BStr(String::from("Rust"))),
-            Box::new(BObject::BInt(Num::new(true, 12138))),
-            Box::new(BObject::BList(vec![
-                Box::new(BObject::BStr(String::from("Java"))),
-                Box::new(BObject::BStr(String::from("Golang"))),
+        let mut expect_bencode: &[u8] = b"l4:Rusti1314el4:Java6:Golanged3:onei-1e3:twoi2eee";
+        let expect_obj = BObject::BList(VecDeque::from([
+            BObject::BStr(String::from("Rust")),
+            BObject::BInt(Num::U64(1314)),
+            BObject::BList(VecDeque::from([
+                BObject::BStr(String::from("Java")),
+                BObject::BStr(String::from("Golang")),
             ])),
-            Box::new(BObject::BDict(HashMap::from([
-                (
-                    String::from("one"),
-                    Box::new(BObject::BInt(Num::new(false, 1))),
-                ),
-                (
-                    String::from("two"),
-                    Box::new(BObject::BInt(Num::new(false, 2))),
-                ),
-            ]))),
-        ]);
+            BObject::BDict(Map::from([
+                (String::from("one"), BObject::BInt(Num::I64(-1))),
+                (String::from("two"), BObject::BInt(Num::U64(2))),
+            ])),
+        ]));
 
         expect_obj.bencode(&mut buf).unwrap();
-        let res_obj = BObject::parse(&mut &buf[..]).unwrap();
+        assert_eq!(expect_bencode, &buf);
+
+        let res_obj = BObject::parse(&mut expect_bencode).unwrap();
         assert_eq!(expect_obj, res_obj);
     }
 }
