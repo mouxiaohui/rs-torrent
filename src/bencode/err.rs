@@ -6,6 +6,7 @@ pub enum Error {
     InvalidType(String),
     InvalidStr,
     InvalidInteger,
+    InvalidList,
     InvalidDict,
 }
 
@@ -28,6 +29,7 @@ impl std::fmt::Display for Error {
             Error::InvalidStr => f.write_str("invalid bencode string"),
             Error::InvalidInteger => f.write_str("invalid bencode integer"),
             Error::InvalidDict => f.write_str("invalid dictionary"),
+            Error::InvalidList => f.write_str("invalid list"),
         }
     }
 }

@@ -19,7 +19,11 @@ where
 }
 
 fn peek(reader: &mut dyn BufRead) -> Result<u8> {
-    Ok(reader.fill_buf()?[0])
+    let peek = reader.fill_buf()?;
+    if peek.len() == 0 {
+        return Err(anyhow!("end error"));
+    }
+    Ok(peek[0])
 }
 
 #[derive(Debug, PartialEq)]
@@ -123,7 +127,7 @@ where
     Ok(size)
 }
 
-fn decode_string<R: ?Sized>(reader: &mut R) -> Result<String>
+fn decode_string_len<R: ?Sized>(reader: &mut R) -> Result<usize>
 where
     R: Read,
 {
@@ -142,9 +146,17 @@ where
         };
     }
 
-    let mut buf = vec![0; len];
-    reader.read(&mut buf)?;
-    let res = std::str::from_utf8(&buf)?;
+    Ok(len)
+}
+
+fn decode_string<R: ?Sized>(reader: &mut R) -> Result<String>
+where
+    R: Read,
+{
+    let len = decode_string_len(reader)?;
+    let mut bytes = vec![0; len];
+    reader.read(&mut bytes)?;
+    let res = std::str::from_utf8(&bytes)?;
 
     Ok(res.to_string())
 }
@@ -160,36 +172,85 @@ where
     Ok(size)
 }
 
-fn decode_int<R: ?Sized>(reader: &mut R) -> Result<Num>
+fn decode_int_bytes<R: ?Sized>(reader: &mut R) -> Result<Vec<u8>>
 where
     R: Read,
 {
     let mut buf = [0; 1];
-
     reader.read(&mut buf)?;
     if buf[0] != b'i' {
         return Err(anyhow!(Error::InvalidInteger));
     }
 
-    let mut num = Vec::new();
-    let mut is_negative = false;
-
+    let mut bytes = Vec::new();
     loop {
         reader.read(&mut buf)?;
         if buf[0] == b'e' {
             break;
-        } else if buf[0] == b'-' {
-            is_negative = true;
         }
 
-        num.push(buf[0]);
+        bytes.push(buf[0]);
     }
 
-    if is_negative {
-        return Ok(Num::I64(parse_utf8(&mut num)?));
+    Ok(bytes)
+}
+
+fn decode_int<R: ?Sized>(reader: &mut R) -> Result<Num>
+where
+    R: Read,
+{
+    let mut bytes = decode_int_bytes(reader)?;
+    if bytes[0] == b'-' {
+        return Ok(Num::I64(parse_utf8(&mut bytes)?));
     }
 
-    Ok(Num::U64(parse_utf8(&mut num)?))
+    Ok(Num::U64(parse_utf8(&mut bytes)?))
+}
+
+pub fn parse_bencode_bytes<R: BufRead>(reader: &mut R) -> Result<Vec<u8>> {
+    match peek(reader)? {
+        b'0'..=b'9' => {
+            let len = decode_string_len(reader)?;
+            let mut bytes = vec![0; len];
+            reader.read(&mut bytes)?;
+            Ok(bytes)
+        }
+        b'i' => decode_int_bytes(reader),
+        b'l' => {
+            reader.consume(1);
+            let mut bytes = Vec::new();
+            loop {
+                if peek(reader)? == b'e' {
+                    reader.consume(1);
+                    break;
+                }
+                bytes.append(&mut parse_bencode_bytes(reader)?);
+            }
+
+            Ok(bytes)
+        }
+        b'd' => {
+            reader.consume(1);
+            let mut bytes = Vec::new();
+            loop {
+                if peek(reader)? == b'e' {
+                    reader.consume(1);
+                    break;
+                }
+
+                let mut key_bytes = parse_bencode_bytes(reader)?;
+                let mut val_bytes = parse_bencode_bytes(reader)?;
+                bytes.append(&mut key_bytes);
+                bytes.append(&mut val_bytes);
+            }
+
+            Ok(bytes)
+        }
+        n @ _ => {
+            let c = n as char;
+            Err(anyhow!(Error::InvalidType(c.to_string())))
+        }
+    }
 }
 
 fn parse_bencode<R: BufRead>(reader: &mut R) -> Result<BObject> {
@@ -273,6 +334,19 @@ mod test {
         let mut reader: &[u8] = b"i2314e";
         let num = decode_int(&mut reader).unwrap();
         assert_eq!(exp, num);
+    }
+
+    #[test]
+    fn test_bytes_parse() {
+        let expect_bytes = b"hello1234".to_vec();
+        let mut bencode: &[u8] = b"l5:helloi1234ee";        
+        let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
+        assert_eq!(expect_bytes, res_bytes);
+
+        let expect_bytes = b"ab".to_vec();
+        let mut bencode: &[u8] = b"d1:a1:be";        
+        let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
+        assert_eq!(expect_bytes, res_bytes);
     }
 
     #[test]
