@@ -1,13 +1,10 @@
-use std::{
-    collections::VecDeque,
-    io::{BufReader, Read},
-};
+use std::{collections::VecDeque, io::Read};
 
 use anyhow::Result;
 use serde::{de, forward_to_deserialize_any};
 
 use super::{
-    bencode::{parse_bencode_bytes, BObject, Map, Num},
+    bencode::{BObject, Map, Num},
     err::Error,
 };
 
@@ -38,20 +35,14 @@ where
         }
         Ok(BObject::parse(&mut self.read)?)
     }
-
-    fn parse_bytes(&mut self) -> Result<Vec<u8>, Error> {
-        let mut reader = BufReader::new(&mut self.read);
-        let bytes = parse_bencode_bytes(&mut reader)?;
-        Ok(bytes)
-    }
 }
 
 impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     type Error = Error;
 
     forward_to_deserialize_any! {
-        string bool i8 i16 i32 u8 u16 u32 f32 f64 u64 i64 enum unit unit_struct
-        tuple_struct ignored_any struct seq map
+        bool i8 i16 i32 u8 u16 u32 f32 f64 u64 i64 enum unit unit_struct
+        tuple_struct ignored_any struct seq map bytes byte_buf
     }
 
     #[inline]
@@ -60,7 +51,7 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
         V: de::Visitor<'de>,
     {
         match self.parse()? {
-            BObject::BStr(v) => visitor.visit_string(v),
+            BObject::BStr(v) => visitor.visit_bytes(v.as_ref()),
             BObject::BInt(v) => match v {
                 Num::U64(v) => visitor.visit_u64(v),
                 Num::I64(v) => visitor.visit_i64(v),
@@ -76,7 +67,24 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
         V: de::Visitor<'de>,
     {
         match self.parse()? {
-            BObject::BStr(v) => visitor.visit_str(v.as_ref()),
+            BObject::BStr(v) => {
+                let s = std::str::from_utf8(&v).map_err(|e| Error::Custom(e.to_string()))?;
+                visitor.visit_str(s)
+            }
+            _ => Err(Error::InvalidStr),
+        }
+    }
+
+    #[inline]
+    fn deserialize_string<V>(self, visitor: V) -> Result<V::Value, Self::Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        match self.parse()? {
+            BObject::BStr(v) => {
+                let s = std::str::from_utf8(&v).map_err(|e| Error::Custom(e.to_string()))?;
+                visitor.visit_string(s.to_string())
+            }
             _ => Err(Error::InvalidStr),
         }
     }
@@ -135,23 +143,6 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
     {
         self.deserialize_str(visitor)
     }
-
-    #[inline]
-    fn deserialize_bytes<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: de::Visitor<'de>,
-    {
-        self.deserialize_byte_buf(visitor)
-    }
-
-    #[inline]
-    fn deserialize_byte_buf<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: de::Visitor<'de>,
-    {
-        let bytes = self.parse_bytes()?;
-        visitor.visit_byte_buf(bytes)
-    }
 }
 
 #[derive(Debug)]
@@ -204,7 +195,7 @@ impl<'de, 'a, R: Read + 'a> de::MapAccess<'de> for MapAccess<'a, R> {
     {
         match self.map.k.pop_front() {
             Some(v) => {
-                self.de.next = Some(BObject::BStr(v));
+                self.de.next = Some(BObject::BStr(v.as_bytes().to_vec()));
                 Ok(Some(seed.deserialize(&mut *self.de)?))
             }
             None => Ok(None),

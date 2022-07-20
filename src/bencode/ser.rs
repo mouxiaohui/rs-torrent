@@ -378,7 +378,7 @@ mod test {
     }
 
     #[test]
-    fn test_ser_string() {
+    fn test_ser() {
         let user = User {
             name: "xiaohui",
             age: 18,

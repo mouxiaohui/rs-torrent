@@ -62,7 +62,7 @@ impl<K, V, const N: usize> From<[(K, V); N]> for Map<K, V> {
 
 #[derive(Debug, PartialEq)]
 pub enum BObject {
-    BStr(String),
+    BStr(Vec<u8>),
     BInt(Num),
     BList(VecDeque<BObject>),
     BDict(Map<String, BObject>),
@@ -97,16 +97,14 @@ where
     Ok(len)
 }
 
-fn decode_string<R: ?Sized>(reader: &mut R) -> Result<String>
+fn decode_str<R: ?Sized>(reader: &mut R) -> Result<Vec<u8>>
 where
     R: Read,
 {
     let len = decode_string_len(reader)?;
     let mut bytes = vec![0; len];
     reader.read(&mut bytes)?;
-    let res = std::str::from_utf8(&bytes)?;
-
-    Ok(res.to_string())
+    Ok(bytes)
 }
 
 fn decode_int_bytes<R: ?Sized>(reader: &mut R) -> Result<Vec<u8>>
@@ -144,55 +142,9 @@ where
     Ok(Num::U64(parse_utf8(&mut bytes)?))
 }
 
-pub fn parse_bencode_bytes<R: BufRead>(reader: &mut R) -> Result<Vec<u8>> {
-    match peek(reader)? {
-        b'0'..=b'9' => {
-            let len = decode_string_len(reader)?;
-            let mut bytes = vec![0; len];
-            reader.read(&mut bytes)?;
-            Ok(bytes)
-        }
-        b'i' => decode_int_bytes(reader),
-        b'l' => {
-            reader.consume(1);
-            let mut bytes = Vec::new();
-            loop {
-                if peek(reader)? == b'e' {
-                    reader.consume(1);
-                    break;
-                }
-                bytes.append(&mut parse_bencode_bytes(reader)?);
-            }
-
-            Ok(bytes)
-        }
-        b'd' => {
-            reader.consume(1);
-            let mut bytes = Vec::new();
-            loop {
-                if peek(reader)? == b'e' {
-                    reader.consume(1);
-                    break;
-                }
-
-                let mut key_bytes = parse_bencode_bytes(reader)?;
-                let mut val_bytes = parse_bencode_bytes(reader)?;
-                bytes.append(&mut key_bytes);
-                bytes.append(&mut val_bytes);
-            }
-
-            Ok(bytes)
-        }
-        n @ _ => {
-            let c = n as char;
-            Err(anyhow!(Error::InvalidType(c.to_string())))
-        }
-    }
-}
-
 fn parse_bencode<R: BufRead>(reader: &mut R) -> Result<BObject> {
     match peek(reader)? {
-        b'0'..=b'9' => Ok(BObject::BStr(decode_string(reader)?)),
+        b'0'..=b'9' => Ok(BObject::BStr(decode_str(reader)?)),
         b'i' => Ok(BObject::BInt(decode_int(reader)?)),
         b'l' => {
             reader.consume(1);
@@ -215,9 +167,9 @@ fn parse_bencode<R: BufRead>(reader: &mut R) -> Result<BObject> {
                     reader.consume(1);
                     break;
                 }
-                let key = decode_string(reader)?;
+                let key = decode_str(reader)?;
                 let val = parse_bencode(reader)?;
-                dict.k.push_back(key);
+                dict.k.push_back(std::str::from_utf8(&key)?.to_string());
                 dict.v.push_back(val);
             }
 
@@ -242,7 +194,10 @@ where
     Ok(())
 }
 
-pub fn encode_bytes<W>(writer: &mut W, v: &[u8]) -> Result<()> where W: Write{
+pub fn encode_bytes<W>(writer: &mut W, v: &[u8]) -> Result<()>
+where
+    W: Write,
+{
     writer.write_all(itoa::Buffer::new().format(v.len()).as_bytes())?;
     writer.write_all(b":")?;
     writer.write_all(v)?;
@@ -257,8 +212,9 @@ mod test {
     #[test]
     fn test_decode_string() {
         let mut reader: &[u8] = b"5:hello";
-        let res = decode_string(&mut reader).unwrap();
-        assert_eq!("hello".to_string(), res);
+        let res = decode_str(&mut reader).unwrap();
+        let exp: &[u8] = b"hello";
+        assert_eq!(exp, res);
     }
 
     #[test]
@@ -275,27 +231,14 @@ mod test {
     }
 
     #[test]
-    fn test_bytes_parse() {
-        let expect_bytes = b"hello1234".to_vec();
-        let mut bencode: &[u8] = b"l5:helloi1234ee";
-        let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
-        assert_eq!(expect_bytes, res_bytes);
-
-        let expect_bytes = b"ab".to_vec();
-        let mut bencode: &[u8] = b"d1:a1:be";
-        let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
-        assert_eq!(expect_bytes, res_bytes);
-    }
-
-    #[test]
     fn test_bencode_parse() {
         let mut expect_bencode: &[u8] = b"l4:Rusti1314el4:Java6:Golanged3:onei-1e3:twoi2eee";
         let expect_obj = BObject::BList(VecDeque::from([
-            BObject::BStr(String::from("Rust")),
+            BObject::BStr(b"Rust".to_vec()),
             BObject::BInt(Num::U64(1314)),
             BObject::BList(VecDeque::from([
-                BObject::BStr(String::from("Java")),
-                BObject::BStr(String::from("Golang")),
+                BObject::BStr(b"Java".to_vec()),
+                BObject::BStr(b"Golang".to_vec()),
             ])),
             BObject::BDict(Map::from([
                 (String::from("one"), BObject::BInt(Num::I64(-1))),
