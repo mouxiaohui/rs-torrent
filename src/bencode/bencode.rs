@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Result};
+use itoa::Integer;
 
 use super::err::Error;
 
@@ -30,15 +31,6 @@ fn peek(reader: &mut dyn BufRead) -> Result<u8> {
 pub enum Num {
     U64(u64),
     I64(i64),
-}
-
-impl Num {
-    pub fn str_num(&self) -> String {
-        match self {
-            Num::U64(v) => v.to_string(),
-            Num::I64(v) => v.to_string(),
-        }
-    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -81,50 +73,6 @@ impl BObject {
         let mut reader = BufReader::new(reader);
         parse_bencode(&mut reader)
     }
-
-    pub fn bencode<W: ?Sized>(&self, writer: &mut W) -> Result<usize>
-    where
-        W: Write,
-    {
-        match self {
-            BObject::BStr(s) => encode_string(writer, s),
-            BObject::BInt(i) => encode_int(writer, i),
-            BObject::BList(list) => {
-                let mut len = 2;
-                writer.write(b"l")?;
-                for obj in list {
-                    len += obj.bencode(writer)?;
-                }
-                writer.write(b"e")?;
-                writer.flush()?;
-
-                Ok(len)
-            }
-            BObject::BDict(dict) => {
-                let mut len = 2;
-                writer.write(b"d")?;
-                for (k, v) in dict.k.iter().zip(dict.v.iter()) {
-                    len += encode_string(writer, k)?;
-                    len += v.bencode(writer)?;
-                }
-                writer.write(b"e")?;
-                writer.flush()?;
-
-                Ok(len)
-            }
-        }
-    }
-}
-
-fn encode_string<W: ?Sized>(writer: &mut W, val: &str) -> Result<usize>
-where
-    W: Write,
-{
-    let val_fmt = format!("{}:{}", val.len(), val);
-    let size = writer.write(val_fmt.as_bytes())?;
-    writer.flush()?;
-
-    Ok(size)
 }
 
 fn decode_string_len<R: ?Sized>(reader: &mut R) -> Result<usize>
@@ -159,17 +107,6 @@ where
     let res = std::str::from_utf8(&bytes)?;
 
     Ok(res.to_string())
-}
-
-fn encode_int<W: ?Sized>(writer: &mut W, val: &Num) -> Result<usize>
-where
-    W: Write,
-{
-    let val_fmt = format!("i{}e", val.str_num());
-    let size = writer.write(val_fmt.as_bytes())?;
-    writer.flush()?;
-
-    Ok(size)
 }
 
 fn decode_int_bytes<R: ?Sized>(reader: &mut R) -> Result<Vec<u8>>
@@ -293,34 +230,35 @@ fn parse_bencode<R: BufRead>(reader: &mut R) -> Result<BObject> {
     }
 }
 
+pub fn encode_int<W, I>(writer: &mut W, i: I) -> Result<()>
+where
+    I: Integer,
+    W: Write,
+{
+    writer.write_all(b"i")?;
+    writer.write_all(itoa::Buffer::new().format(i).as_bytes())?;
+    writer.write_all(b"e")?;
+
+    Ok(())
+}
+
+pub fn encode_bytes<W>(writer: &mut W, v: &[u8]) -> Result<()> where W: Write{
+    writer.write_all(itoa::Buffer::new().format(v.len()).as_bytes())?;
+    writer.write_all(b":")?;
+    writer.write_all(v)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
-
-    #[test]
-    fn test_encode_string() {
-        let mut writer = vec![];
-        encode_string(&mut writer, "hello").unwrap();
-        assert_eq!("5:hello", std::str::from_utf8(&writer).unwrap());
-    }
 
     #[test]
     fn test_decode_string() {
         let mut reader: &[u8] = b"5:hello";
         let res = decode_string(&mut reader).unwrap();
         assert_eq!("hello".to_string(), res);
-    }
-
-    #[test]
-    fn test_encode_int() {
-        let mut writer = vec![];
-        let num1 = Num::U64(8848);
-        let num2 = Num::I64(-8848);
-        encode_int(&mut writer, &num1).unwrap();
-        assert_eq!("i8848e", std::str::from_utf8(&writer).unwrap());
-        writer.clear();
-        encode_int(&mut writer, &num2).unwrap();
-        assert_eq!("i-8848e", std::str::from_utf8(&writer).unwrap());
     }
 
     #[test]
@@ -339,19 +277,18 @@ mod test {
     #[test]
     fn test_bytes_parse() {
         let expect_bytes = b"hello1234".to_vec();
-        let mut bencode: &[u8] = b"l5:helloi1234ee";        
+        let mut bencode: &[u8] = b"l5:helloi1234ee";
         let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
         assert_eq!(expect_bytes, res_bytes);
 
         let expect_bytes = b"ab".to_vec();
-        let mut bencode: &[u8] = b"d1:a1:be";        
+        let mut bencode: &[u8] = b"d1:a1:be";
         let res_bytes = parse_bencode_bytes(&mut bencode).unwrap();
         assert_eq!(expect_bytes, res_bytes);
     }
 
     #[test]
     fn test_bencode_parse() {
-        let mut buf = vec![];
         let mut expect_bencode: &[u8] = b"l4:Rusti1314el4:Java6:Golanged3:onei-1e3:twoi2eee";
         let expect_obj = BObject::BList(VecDeque::from([
             BObject::BStr(String::from("Rust")),
@@ -365,9 +302,6 @@ mod test {
                 (String::from("two"), BObject::BInt(Num::U64(2))),
             ])),
         ]));
-
-        expect_obj.bencode(&mut buf).unwrap();
-        assert_eq!(expect_bencode, &buf);
 
         let res_obj = BObject::parse(&mut expect_bencode).unwrap();
         assert_eq!(expect_obj, res_obj);

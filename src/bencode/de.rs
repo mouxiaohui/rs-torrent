@@ -36,12 +36,12 @@ where
         if let Some(v) = self.next.take() {
             return Ok(v);
         }
-        Ok(BObject::parse(&mut self.read).map_err(|e| Error::Custom(e.to_string()))?)
+        Ok(BObject::parse(&mut self.read)?)
     }
 
     fn parse_bytes(&mut self) -> Result<Vec<u8>, Error> {
         let mut reader = BufReader::new(&mut self.read);
-        let bytes = parse_bencode_bytes(&mut reader).map_err(|e| Error::Custom(e.to_string()))?;
+        let bytes = parse_bencode_bytes(&mut reader)?;
         Ok(bytes)
     }
 }
@@ -76,8 +76,8 @@ impl<'de, 'a, R: Read> de::Deserializer<'de> for &'a mut Deserializer<R> {
         V: de::Visitor<'de>,
     {
         match self.parse()? {
-            BObject::BStr(v) => visitor.visit_str(v.as_str()),
-            _ => Err(Error::InvalidStr)
+            BObject::BStr(v) => visitor.visit_str(v.as_ref()),
+            _ => Err(Error::InvalidStr),
         }
     }
 
@@ -276,7 +276,7 @@ mod test {
             name: "xiaohui".to_string(),
             age: 18,
         };
-        let data: &[u8] = b"d4:name7:xiaohui3:agei18ee";
+        let data: &[u8] = b"d3:agei18e4:name7:xiaohuie";
         let res: User = from_bytes(data).unwrap();
         assert_eq!(user, res);
     }
