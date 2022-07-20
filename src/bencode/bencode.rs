@@ -103,7 +103,7 @@ where
 {
     let len = decode_string_len(reader)?;
     let mut bytes = vec![0; len];
-    reader.read(&mut bytes)?;
+    reader.read_exact(&mut bytes)?;
     Ok(bytes)
 }
 

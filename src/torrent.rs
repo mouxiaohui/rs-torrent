@@ -8,7 +8,6 @@ use crate::bencode::de;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct TorrentFile {
-    name: String,
     info: Info,
 }
 
@@ -18,8 +17,9 @@ struct Info {
 }
 
 pub fn parse_torrent_file(path: &str) -> Result<()> {
-    let mut file = std::fs::File::open(path)?;
     let mut buf = Vec::new();
+    let mut file = std::fs::File::open(path)?;
+    
     file.read_to_end(&mut buf)?;
     let torrent_file: TorrentFile = de::from_bytes(&buf)?;
     println!("{:?}", torrent_file);
