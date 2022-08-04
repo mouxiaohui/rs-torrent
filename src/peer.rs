@@ -1,34 +1,62 @@
-use std::net::Ipv4Addr;
+use std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    time::Duration,
+};
 
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde_bytes::ByteBuf;
+use tokio::net::TcpStream;
 
 #[derive(Debug)]
-pub struct PeerInfo {
-    pub ip: Ipv4Addr,
+pub struct Peer {
+    pub ip: IpAddr,
     pub port: u16,
 }
 
-pub async fn find_peers_info(peers: ByteBuf) -> Result<Vec<PeerInfo>>{
-    if peers.len() % 6 != 0 {
-        return Err(anyhow!("Received malformed peers"));
+impl Peer {
+    const IP_LEN: usize = 4;
+    const PORT_LEN: usize = 2;
+    const LENGTH: usize = Self::IP_LEN + Self::PORT_LEN;
+
+    fn addr(&self) -> SocketAddr {
+        SocketAddr::new(self.ip, self.port)
     }
 
-    let mut peers_info = Vec::new();
-    for i in 0..(peers.len() / 6) {
-        let offset = i * 6;
-        let ip = &peers[offset..(offset + 4)];
-        let port = &peers[(offset + 4)..(offset + 6)];
-
-        peers_info.push(PeerInfo {
-            ip: Ipv4Addr::new(ip[0], ip[1], ip[2], ip[3]),
-            port: u16::from_be_bytes(port.try_into()?),
-        });
+    pub async fn connect(&self, timeout: Duration) -> Result<TcpStream> {
+        match tokio::time::timeout(timeout, TcpStream::connect(self.addr())).await {
+            Ok(c) => match c {
+                Ok(ok) => Ok(ok),
+                Err(e) => Err(anyhow!("Error while connecting to server: {}", e)),
+            },
+            Err(_) => return Err(anyhow!("Timeout while connecting to server")),
+        }
     }
-
-    Ok(peers_info)
 }
 
-// pub async fn handshake(client: &mut TcpStream,peer_info: &PeerInfo, peer_id: &[u8]) -> Result<()>{
-//     Ok(())
-// }
+impl TryFrom<&[u8]> for Peer {
+    type Error = anyhow::Error;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        if bytes.len() != Self::LENGTH {
+            return Err(anyhow!("Received malformed peers"));
+        }
+
+        Ok(Self {
+            ip: IpAddr::V4(Ipv4Addr::from(u32::from_be_bytes(
+                bytes[..Self::IP_LEN].try_into()?,
+            ))),
+            port: u16::from_be_bytes(bytes[Self::IP_LEN..].try_into()?),
+        })
+    }
+}
+
+pub async fn find_peers(peers: ByteBuf) -> Result<Vec<Peer>> {
+    let peer_chunks: Vec<&[u8]> = peers.chunks(Peer::LENGTH).collect();
+    let mut peers = Vec::new();
+    for chunk in peer_chunks {
+        peers.push(Peer::try_from(chunk)?);
+    }
+
+    Ok(peers)
+}
+

@@ -43,8 +43,8 @@ pub struct Info {
     )]
     pub pieces: Vec<[u8; 20]>,
     #[serde(rename(serialize = "piece length", deserialize = "piece length"))]
-    pub piece_length: u64,
-    pub length: u64,
+    pub piece_length: usize,
+    pub length: usize,
     pub name: String,
 }
 

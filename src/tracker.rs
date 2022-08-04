@@ -5,7 +5,7 @@ use serde_bytes::ByteBuf;
 use serde_derive::{Deserialize, Serialize};
 
 use crate::bencode::de;
-use crate::torrent::TorrentFile;
+use crate::torrent_file::TorrentFile;
 
 const PORT: &str = "6881";
 
