@@ -28,7 +28,7 @@ impl Peer {
                 Ok(ok) => Ok(ok),
                 Err(e) => Err(anyhow!("Error while connecting to server: {}", e)),
             },
-            Err(_) => return Err(anyhow!("Timeout while connecting to server")),
+            Err(_) => return Err(anyhow!("Timeout while connecting to server: {}", self.addr())),
         }
     }
 }

@@ -1,7 +1,9 @@
-use anyhow::Result;
-use tokio::net::TcpStream;
+use std::time::Duration;
 
-use crate::bencode;
+use anyhow::Result;
+use tokio::io::AsyncWriteExt;
+
+use crate::handshake::Handshake;
 use crate::peer::{find_peers, Peer};
 use crate::torrent_file::{self, TorrentFile};
 use crate::tracker::request_tracker;
@@ -49,7 +51,11 @@ impl Torrent {
     async fn download(&self) -> Result<()> {
         println!("Start download for {}", self.name);
 
-        for peer in &self.peers {}
+        for peer in &self.peers {
+            let mut stream = peer.connect(Duration::from_secs(30)).await?;
+            let mut handshake = Handshake::new(self.info_hash, self.peer_id);
+            stream.write_all(&handshake.serialize()?).await?;
+        }
 
         Ok(())
     }
